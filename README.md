@@ -11,7 +11,7 @@ Daily Stand Up Meeting Notes
         └── Validated:
 ```
 
-It only creates missing pages. It never edits existing pages, blocks, icons, covers, or ticket content. GitHub Actions is not required.
+It only creates missing pages. It never edits existing pages, blocks, icons, covers, or ticket content. New pages receive a random emoji icon and cover image. GitHub Actions is not required.
 
 ## 1. Create and share a Notion integration
 
@@ -86,6 +86,12 @@ docker compose run --rm notion-standup node standup.mjs --date 2026-11-03 --back
 
 # Create all missing weekday pages in the selected month.
 docker compose run --rm notion-standup node standup.mjs --date 2026-11-03 --backfill-month
+
+# Preview adding icons/covers to existing month and daily pages that lack either.
+docker compose run --rm notion-standup node standup.mjs --backfill-appearance --dry-run
+
+# Add only missing icons/covers to existing month and daily pages.
+docker compose run --rm notion-standup node standup.mjs --backfill-appearance
 ```
 
 These commands reuse the same creation and duplicate checks as the scheduler.
@@ -125,3 +131,4 @@ docker compose build
 ## Safety
 
 The automation checks direct child pages with pagination, creates the month page if needed, and only creates a missing weekday under that month. Existing matching pages are preserved. Monthly and daily duplicate titles are reported so conflicts can be resolved manually in Notion.
+Newly created month and daily pages receive randomly selected emoji icons and external Unsplash cover images; existing icons and covers are never changed.

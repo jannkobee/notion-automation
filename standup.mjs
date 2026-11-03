@@ -16,12 +16,29 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const PAGE_ICONS = ['📅', '🗓️', '📝', '✅', '☕', '🚀', '💼', '🎯', '💡', '🌿', '🌤️', '⚡'];
+const PAGE_COVERS = [
+  'https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1499750310107-5fef28a66643?auto=format&fit=crop&w=1600&q=80',
+];
 
 export function extractPageId(value) {
   if (!value) throw new Error('Missing NOTION_ROOT_PAGE_ID. Provide a page ID or full Notion page URL.');
   const matches = String(value).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}/gi);
   if (!matches?.length) throw new Error('Could not find a 32-hex-character page ID in NOTION_ROOT_PAGE_ID.');
   return matches.at(-1).replace(/-/g, '');
+}
+
+export function randomPageAppearance(random = Math.random) {
+  const icons = PAGE_ICONS;
+  const covers = PAGE_COVERS;
+  return {
+    iconEmoji: icons[Math.floor(random() * icons.length) % icons.length],
+    coverUrl: covers[Math.floor(random() * covers.length) % covers.length],
+  };
 }
 
 export function getLocalDate(now = new Date()) {
@@ -55,18 +72,20 @@ function parseArgs(args) {
   let date = getLocalDate();
   let dryRun = false;
   let backfillMonth = false;
+   let backfillAppearance = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--date') date = args[++i];
     else if (arg === '--dry-run') dryRun = true;
     else if (arg === '--backfill-month') backfillMonth = true;
+    else if (arg === '--backfill-appearance') backfillAppearance = true;
     else if (arg === '--help') {
-      console.log('Usage: node standup.mjs [--date YYYY-MM-DD] [--dry-run] [--backfill-month]');
+      console.log('Usage: node standup.mjs [--date YYYY-MM-DD] [--dry-run] [--backfill-month] [--backfill-appearance]');
       process.exit(0);
     } else throw new Error(`Unknown option: ${arg}`);
   }
   dateDetails(date);
-  return { date, dryRun, backfillMonth };
+  return { date, dryRun, backfillMonth, backfillAppearance };
 }
 
 export async function api(token, method, path, body) {
@@ -150,10 +169,12 @@ function dayTemplate() {
   ];
 }
 
-async function createChildPage(token, parentId, title, iconEmoji, children = []) {
+async function createChildPage(token, parentId, title, children = []) {
+  const appearance = randomPageAppearance();
   return api(token, 'POST', '/pages', {
     parent: { type: 'page_id', page_id: parentId },
-    icon: { type: 'emoji', emoji: iconEmoji },
+    icon: { type: 'emoji', emoji: appearance.iconEmoji },
+    cover: { type: 'external', external: { url: appearance.coverUrl } },
     properties: { title: { type: 'title', title: [{ type: 'text', text: { content: title } }] } },
     ...(children.length ? { children } : {}),
   });
@@ -169,10 +190,51 @@ export function monthWorkdays(year, month) {
   return result;
 }
 
-export async function run({ token, rootPageId, date, dryRun = false, backfillMonth = false }) {
+async function updatePageAppearance(token, pageId, dryRun) {
+  const page = await api(token, 'GET', `/pages/${pageId}`);
+  const appearance = randomPageAppearance();
+  const update = {};
+
+  if (!page.icon) update.icon = { type: 'emoji', emoji: appearance.iconEmoji };
+  if (!page.cover) update.cover = { type: 'external', external: { url: appearance.coverUrl } };
+  if (!Object.keys(update).length) return false;
+
+  console.log(`${dryRun ? 'Would add' : 'Adding'} ${[
+    update.icon ? 'icon' : null,
+    update.cover ? 'cover' : null,
+  ].filter(Boolean).join(' and ')} to page ${pageId}`);
+  if (!dryRun) await api(token, 'PATCH', `/pages/${pageId}`, update);
+  return true;
+}
+
+export async function backfillPageAppearances({ token, rootPageId, dryRun = false }) {
+  if (!token) throw new Error('Missing NOTION_TOKEN.');
+  const rootId = extractPageId(rootPageId);
+  await api(token, 'GET', `/pages/${rootId}`);
+  let changed = 0;
+  const monthPages = await listImmediateChildPages(token, rootId);
+
+  for (const month of monthPages.filter(page => /^[A-Za-z]+ \d{4}$/.test(page.child_page?.title ?? ''))) {
+    if (await updatePageAppearance(token, month.id, dryRun)) changed++;
+    const dailyPages = await listImmediateChildPages(token, month.id);
+    for (const day of dailyPages) {
+      if (await updatePageAppearance(token, day.id, dryRun)) changed++;
+    }
+  }
+
+  console.log(`${dryRun ? 'Would update' : 'Updated'} ${changed} page(s) missing appearance data.`);
+  return changed;
+}
+
+export async function run({ token, rootPageId, date, dryRun = false, backfillMonth = false, backfillAppearance = false }) {
   if (!token) throw new Error('Missing NOTION_TOKEN.');
   const rootId = extractPageId(rootPageId);
   const selected = dateDetails(date);
+
+  if (backfillAppearance) {
+    await backfillPageAppearances({ token, rootPageId: rootId, dryRun });
+    return;
+  }
 
   console.log(`Checking Notion stand-up pages for ${date} (${TIMEZONE})${dryRun ? ' [DRY RUN]' : ''}`);
   await api(token, 'GET', `/pages/${rootId}`);
@@ -184,7 +246,7 @@ export async function run({ token, rootPageId, date, dryRun = false, backfillMon
   } else {
     console.log(`${dryRun ? 'Would create' : 'Creating'} month: ${selected.monthTitle}`);
     if (!dryRun) {
-      const created = await createChildPage(token, rootId, selected.monthTitle, '📅');
+      const created = await createChildPage(token, rootId, selected.monthTitle);
       monthId = created.id;
       console.log(`Created month: ${created.url}`);
     }
@@ -205,7 +267,7 @@ export async function run({ token, rootPageId, date, dryRun = false, backfillMon
     }
     console.log(`${dryRun ? 'Would create' : 'Creating'} daily page: ${title}`);
     if (!dryRun) {
-      const created = await createChildPage(token, monthId, title, '📝', dayTemplate());
+      const created = await createChildPage(token, monthId, title, dayTemplate());
       dayPages.push({ id: created.id, type: 'child_page', child_page: { title } });
       console.log(`Created daily page: ${created.url}`);
     }

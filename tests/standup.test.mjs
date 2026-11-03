@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { api, dateDetails, getLocalDate, monthWorkdays, extractPageId, run } from '../standup.mjs';
+import { api, dateDetails, getLocalDate, monthWorkdays, extractPageId, randomPageAppearance, backfillPageAppearances, run } from '../standup.mjs';
 
 const ROOT = '11111111111111111111111111111111';
 const MONTH = '22222222222222222222222222222222';
@@ -109,5 +109,63 @@ test('reports Notion authentication and permission errors clearly', async () => 
     await assert.rejects(api('fake', 'GET', '/pages/123'), /authentication failed/i);
     globalThis.fetch = async () => new Response('', {status: 403});
     await assert.rejects(api('fake', 'GET', '/pages/123'), /access denied/i);
+  } finally {globalThis.fetch=original;}
+});
+
+test('uses random icon and cover values for newly created pages', async () => {
+  const original = globalThis.fetch;
+  try {
+    const {writes} = mockNotion();
+    await run({token:'fake', rootPageId:ROOT, date:'2026-11-03'});
+    assert.equal(writes.length, 2);
+    for (const write of writes) {
+      assert.equal(write.icon.type, 'emoji');
+      assert.ok(write.icon.emoji);
+      assert.equal(write.cover.type, 'external');
+      assert.match(write.cover.external.url, /^https:\/\/images\.unsplash\.com\//);
+    }
+    assert.deepEqual(randomPageAppearance(() => 0), {
+      iconEmoji: '📅',
+      coverUrl: 'https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1600&q=80',
+    });
+  } finally {globalThis.fetch=original;}
+});
+
+test('backfill appearance updates only pages missing icon or cover', async () => {
+  const original = globalThis.fetch;
+  try {
+    const pages = {
+      [ROOT]: { id: ROOT, icon: null, cover: null },
+      [MONTH]: { id: MONTH, icon: {type: 'emoji', emoji: '📅'}, cover: null },
+      [DAY]: { id: DAY, icon: null, cover: {type: 'external', external: {url: 'existing'}} },
+    };
+    const updates = [];
+    globalThis.fetch = async (rawUrl, opts) => {
+      const url = new URL(rawUrl);
+      const pageMatch = url.pathname.match(/^\/v1\/pages\/(\w+)$/);
+      if (pageMatch && opts.method === 'GET') return Response.json(pages[pageMatch[1]]);
+      const childMatch = url.pathname.match(/^\/v1\/blocks\/(\w+)\/children$/);
+      if (childMatch) {
+        const results = childMatch[1] === ROOT
+          ? [{id: MONTH, type: 'child_page', child_page: {title: 'November 2026'}}]
+          : childMatch[1] === MONTH
+            ? [{id: DAY, type: 'child_page', child_page: {title: 'November 3, 2026'}}]
+            : [];
+        return Response.json({results, has_more: false, next_cursor: null});
+      }
+      if (opts.method === 'PATCH' && pageMatch) {
+        updates.push({id: pageMatch[1], body: JSON.parse(opts.body)});
+        return Response.json({id: pageMatch[1]});
+      }
+      return new Response('unsupported', {status: 404});
+    };
+
+    await backfillPageAppearances({token: 'fake', rootPageId: ROOT});
+    assert.equal(updates.length, 2);
+    assert.deepEqual(updates.map(update => update.id).sort(), [MONTH, DAY].sort());
+    assert.ok(updates.find(update => update.id === MONTH).body.cover);
+    assert.ok(!updates.find(update => update.id === MONTH).body.icon);
+    assert.ok(updates.find(update => update.id === DAY).body.icon);
+    assert.ok(!updates.find(update => update.id === DAY).body.cover);
   } finally {globalThis.fetch=original;}
 });
