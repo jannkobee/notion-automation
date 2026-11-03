@@ -1,0 +1,31 @@
+name: Create Notion daily stand-up pages
+
+on:
+  schedule:
+    # Runs every day at 08:10 Philippine time; creates daily pages on weekdays only.
+    # Daily schedule also creates the month page even when the 1st is a weekend.
+    - cron: '10 8 * * *'
+      timezone: 'Asia/Manila'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notion-standup-create-pages
+  cancel-in-progress: false
+
+jobs:
+  create-pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Create missing Notion pages
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_ROOT_PAGE_ID: ${{ secrets.NOTION_ROOT_PAGE_ID }}
+        run: node standup.mjs

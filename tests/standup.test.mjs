@@ -1,0 +1,84 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { dateDetails, getLocalDate, monthWorkdays, extractPageId, run } from '../standup.mjs';
+
+const ROOT = '11111111111111111111111111111111';
+const MONTH = '22222222222222222222222222222222';
+const DAY = '33333333333333333333333333333333';
+
+function mockNotion({ startWithMonth = false, startWithDay = false } = {}) {
+  const children = new Map([[ROOT, []], [MONTH, []], [DAY, []]]);
+  if (startWithMonth) children.get(ROOT).push({id:MONTH,type:'child_page',child_page:{title:'November 2026'}});
+  if (startWithDay) children.get(MONTH).push({id:DAY,type:'child_page',child_page:{title:'November 3, 2026'}});
+  const writes = [];
+  globalThis.fetch = async (rawUrl, opts) => {
+    const url = new URL(rawUrl);
+    if (opts.method === 'GET') {
+      const match = url.pathname.match(/^\/v1\/blocks\/(\w+)\/children$/);
+      if (!match) return new Response('missing endpoint', {status:404});
+      return Response.json({results: children.get(match[1]) ?? [], has_more:false, next_cursor:null});
+    }
+    if (opts.method === 'POST') {
+      assert.equal(url.pathname, '/v1/pages');
+      const body = JSON.parse(opts.body);
+      writes.push(body);
+      const id = body.parent.page_id === ROOT ? MONTH : DAY;
+      const title = body.properties.title.title[0].text.content;
+      children.get(body.parent.page_id).push({id,type:'child_page',child_page:{title}});
+      return Response.json({id,url:`https://notion.so/${id}`});
+    }
+    return new Response('unsupported', {status:500});
+  };
+  return { children, writes };
+}
+
+test('Asia/Manila date, titles, leap year validation, and weekends', () => {
+  assert.equal(getLocalDate(new Date('2026-11-02T16:05:00.000Z')), '2026-11-03');
+  assert.equal(dateDetails('2026-11-03').dayTitle, 'November 3, 2026');
+  assert.equal(dateDetails('2026-11-01').isWorkday, false);
+  assert.equal(monthWorkdays(2026, 11).length, 21);
+  assert.throws(()=>dateDetails('2026-02-30'));
+  assert.equal(extractPageId(`https://www.notion.so/Daily-Stand-Up-${ROOT}?pvs=4`), ROOT);
+});
+
+test('creates missing month and daily template, and leaves them untouched on second run', async () => {
+  const original = globalThis.fetch;
+  try {
+    const {writes} = mockNotion();
+    const args = {token:'fake', rootPageId:ROOT, date:'2026-11-03'};
+    await run(args);
+    assert.equal(writes.length, 2);
+    assert.equal(writes[0].properties.title.title[0].text.content, 'November 2026');
+    assert.equal(writes[1].properties.title.title[0].text.content, 'November 3, 2026');
+    assert.deepEqual(writes[1].children.filter(b => b.paragraph.rich_text.length).map(b => b.paragraph.rich_text[0].text.content), ['Investigated:', 'Task:', 'Validated:']);
+    await run(args);
+    assert.equal(writes.length, 2);
+  } finally {globalThis.fetch=original;}
+});
+
+test('does not write when matching daily page already exists', async () => {
+  const original = globalThis.fetch;
+  try {
+    const {writes}=mockNotion({startWithMonth:true,startWithDay:true});
+    await run({token:'fake',rootPageId:ROOT,date:'2026-11-03'});
+    assert.equal(writes.length,0);
+  } finally {globalThis.fetch=original;}
+});
+
+test('creates month but not daily page on weekend', async () => {
+  const original=globalThis.fetch;
+  try {
+    const {writes}=mockNotion();
+    await run({token:'fake',rootPageId:ROOT,date:'2026-11-01'});
+    assert.equal(writes.length,1);
+  } finally {globalThis.fetch=original;}
+});
+
+test('dry run never writes and supports backfill preview', async () => {
+  const original=globalThis.fetch;
+  try {
+    const {writes}=mockNotion();
+    await run({token:'fake',rootPageId:ROOT,date:'2026-11-03',dryRun:true,backfillMonth:true});
+    assert.equal(writes.length,0);
+  } finally {globalThis.fetch=original;}
+});
