@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dateDetails, getLocalDate, monthWorkdays, extractPageId, run } from '../standup.mjs';
+import { api, dateDetails, getLocalDate, monthWorkdays, extractPageId, run } from '../standup.mjs';
 
 const ROOT = '11111111111111111111111111111111';
 const MONTH = '22222222222222222222222222222222';
@@ -14,6 +14,11 @@ function mockNotion({ startWithMonth = false, startWithDay = false } = {}) {
   globalThis.fetch = async (rawUrl, opts) => {
     const url = new URL(rawUrl);
     if (opts.method === 'GET') {
+      const pageMatch = url.pathname.match(/^\/v1\/pages\/(\w+)$/);
+      if (pageMatch) {
+        assert.equal(pageMatch[1], ROOT);
+        return Response.json({id: ROOT, object: 'page'});
+      }
       const match = url.pathname.match(/^\/v1\/blocks\/(\w+)\/children$/);
       if (!match) return new Response('missing endpoint', {status:404});
       return Response.json({results: children.get(match[1]) ?? [], has_more:false, next_cursor:null});
@@ -80,5 +85,29 @@ test('dry run never writes and supports backfill preview', async () => {
     const {writes}=mockNotion();
     await run({token:'fake',rootPageId:ROOT,date:'2026-11-03',dryRun:true,backfillMonth:true});
     assert.equal(writes.length,0);
+  } finally {globalThis.fetch=original;}
+});
+
+test('retries transient Notion failures', async () => {
+  const original = globalThis.fetch;
+  try {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      if (calls === 1) return new Response('', { status: 503 });
+      return Response.json({ ok: true });
+    };
+    assert.deepEqual(await api('fake', 'GET', '/test'), {ok: true});
+    assert.equal(calls, 2);
+  } finally {globalThis.fetch=original;}
+});
+
+test('reports Notion authentication and permission errors clearly', async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => new Response('', {status: 401});
+    await assert.rejects(api('fake', 'GET', '/pages/123'), /authentication failed/i);
+    globalThis.fetch = async () => new Response('', {status: 403});
+    await assert.rejects(api('fake', 'GET', '/pages/123'), /access denied/i);
   } finally {globalThis.fetch=original;}
 });

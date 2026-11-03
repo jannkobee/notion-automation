@@ -1,0 +1,10 @@
+services:
+  notion-standup:
+    build: .
+    container_name: notion-standup
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Manila}
+      SCHEDULE_CRON: ${SCHEDULE_CRON:-0 8 * * 1-5}

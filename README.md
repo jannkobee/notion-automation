@@ -1,98 +1,127 @@
-# Notion Daily Stand-up Page Automation
+# Notion Daily Stand-up Automation
 
-Creates and maintains this exact page hierarchy, using **ordinary Notion nested pages**:
+This service creates weekday pages under an existing `Daily Stand Up Meeting Notes` root page:
 
-```
-Daily Stand Up Meeting Notes (your existing page; never modified)
-└── November 2026                    (created if missing)
-    ├── November 2, 2026             (created if missing)
-    ├── November 3, 2026             (created if missing)
-    │   ├── Investigated:            (blank area for manual ticket links)
-    │   ├── Task:
-    │   └── Validated:
-    └── November 4, 2026
+```text
+Daily Stand Up Meeting Notes
+└── November 2026
+    └── November 3, 2026
+        ├── Investigated:
+        ├── Task:
+        └── Validated:
 ```
 
-You continue adding ticket links manually. **The script only adds missing pages.** It never edits, archives, sorts, deletes, or replaces existing page content.
+It only creates missing pages. It never edits existing pages, blocks, icons, covers, or ticket content. GitHub Actions is not required.
 
-## 1. Get a Notion API token
+## 1. Create and share a Notion integration
 
-For a personal automation, Notion's [personal access token](https://www.notion.so/profile/integrations) is convenient. In the [Notion developer portal](https://developers.notion.com/guides/notion-api/quick-start), create a personal access token with Notion API access. The token uses your user permissions.
+1. Open <https://www.notion.so/profile/integrations> and create an internal integration.
+2. Grant it `Read content`, `Update content`, and `Insert content`.
+3. Open the existing `Daily Stand Up Meeting Notes` page in Notion.
+4. Choose `•••` → `Connections` → add the integration.
+5. Copy the integration token.
 
-Alternatively, create a Notion **internal connection** with *read content* and *insert content* capabilities, and **open the existing "Daily Stand Up Meeting Notes" page → `•••` → `Add connections` → select your connection**. This is necessary for internal connections. The root page must be a regular Notion page with nested child pages, not merely links to pages elsewhere.
+All pages below the root should also remain accessible to that integration through the connected root page.
 
-**Never paste the token into chat or commit it to a repository.**
+## 2. Find the root page ID
 
-## 2. Find your root page ID
+Open the root page and use `Copy link`. The page ID is the final 32 hexadecimal characters in the URL. Both an ID and a full Notion URL are accepted. For example:
 
-Open the **Daily Stand Up Meeting Notes** page in Notion, then select **Copy link**. The 32-hex-character identifier at the end of the page URL is the page ID. The script accepts either the complete URL or the ID.
-
-## 3. Test locally
-
-Requires **Node.js 22 or newer**. No `npm install` is needed.
-
-From this folder, set environment variables in your terminal:
-
-**PowerShell:**
-
-```powershell
-$env:NOTION_TOKEN = "ntn_your_token_here"
-$env:NOTION_ROOT_PAGE_ID = "https://www.notion.so/your-page-name-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-node standup.mjs --date 2026-11-03 --dry-run
-node standup.mjs --date 2026-11-03
+```text
+https://www.notion.so/Daily-Stand-Up-Meeting-Notes-0123456789abcdef0123456789abcdef
 ```
 
-**Linux/macOS:**
+Use `0123456789abcdef0123456789abcdef`.
+
+## 3. Configure Docker
+
+Copy the environment template:
 
 ```bash
-export NOTION_TOKEN='ntn_your_token_here'
-export NOTION_ROOT_PAGE_ID='https://www.notion.so/your-page-name-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-node standup.mjs --date 2026-11-03 --dry-run
-node standup.mjs --date 2026-11-03
+cp .env.example .env
 ```
 
-The **dry-run checks existing pages but creates nothing**. Run the second command only after verifying the plan.
+Set the real values in `.env`:
 
-## 4. Make it automatic with GitHub Actions
+```dotenv
+NOTION_TOKEN=your_notion_integration_token
+NOTION_ROOT_PAGE_ID=0123456789abcdef0123456789abcdef
+TZ=Asia/Manila
+SCHEDULE_CRON=0 8 * * 1-5
+```
 
-1. Create a **private** GitHub repository and push the files from this folder, including `.github/workflows/notion-standup.yml`, to the repository's **default branch**.
-2. Go to **Settings → Secrets and variables → Actions → New repository secret**.
-3. Add `NOTION_TOKEN` with your actual Notion API token.
-4. Add `NOTION_ROOT_PAGE_ID` with your root page's ID or complete URL.
-5. Go to **Actions → Create Notion daily stand-up pages → Run workflow** to test it.
-6. Leave the workflow enabled. It runs **every day at 08:10 Asia/Manila**. It creates a month page if missing, then creates **today's page only on Monday through Friday**.
+The default cron runs at 08:00 Monday–Friday in `Asia/Manila`. The container checks immediately on startup, then runs on the cron schedule. Cron syntax is configured as `<minute> <hour> <day-of-month> <month> <day-of-week>`.
 
-GitHub scheduled workflows can be delayed or occasionally dropped. If a daily run is missed, trigger it manually with `--date` locally or use the optional backfill command. The script is idempotent for ordinary sequential runs.
-
-## Optional: Create all weekdays in a month in advance
+## 4. Build and start
 
 ```bash
-node standup.mjs --date 2026-11-03 --backfill-month --dry-run
-node standup.mjs --date 2026-11-03 --backfill-month
+docker compose build
+docker compose up -d
+docker compose ps
 ```
 
-This creates **all Monday–Friday pages** in that month, including future weekdays; it does **not** know Philippine public holidays, approved leave days, or other personal days off. Existing dated pages remain untouched.
+The service restarts automatically unless it is explicitly stopped:
 
-## Behavior and safety
+```bash
+docker compose stop
+docker compose start
+```
 
-- Uses timezone **Asia/Manila** for date calculation.
-- Names are exact: `November 2026` → `November 3, 2026`.
-- Existing child pages are detected by exact title and parent, with paginated Notion API lookups.
-- Duplicated matching titles generate an error rather than choosing arbitrarily.
-- `Investigated:`, `Task:`, and `Validated:` are added to **new daily pages only**.
-- Pre-existing ticket links and formatted blocks are never rewritten.
-- Every new month gets 📅 and every new day gets 📝; existing icons remain unchanged.
-- New pages are appended by Notion; the script does not reorder existing child pages.
-- The job cannot create pages if Notion permissions do not allow it.
-- If a network failure happens after a write is accepted but before the response arrives, the next run rechecks for the page before attempting creation again. Extremely rare concurrent external writes may still create duplicate pages, because Notion does not offer an atomic create-if-not-exists operation on nested page titles.
-- `--backfill-month` is optional. No holiday detection or ticket synchronization occurs.
+## 5. Manual commands
+
+Run commands inside the service container:
+
+```bash
+# Check today's pages.
+docker compose run --rm notion-standup node standup.mjs
+
+# Dry run today's page creation.
+docker compose run --rm notion-standup node standup.mjs --dry-run
+
+# Create or check a specific date.
+docker compose run --rm notion-standup node standup.mjs --date 2026-11-03
+
+# Preview all weekday pages in the selected month.
+docker compose run --rm notion-standup node standup.mjs --date 2026-11-03 --backfill-month --dry-run
+
+# Create all missing weekday pages in the selected month.
+docker compose run --rm notion-standup node standup.mjs --date 2026-11-03 --backfill-month
+```
+
+These commands reuse the same creation and duplicate checks as the scheduler.
+
+## 6. Logs
+
+```bash
+docker compose logs -f notion-standup
+docker compose logs --tail=100 notion-standup
+```
+
+## 7. Local tests
+
+No Notion writes are made by the tests.
+
+```bash
+npm ci
+npm test
+```
+
+Docker validation:
+
+```bash
+docker compose config
+docker compose build
+```
 
 ## Troubleshooting
 
-- **401:** Token is invalid. Check `NOTION_TOKEN`.
-- **403/404:** Integration is not connected to the root Notion page, page ID is wrong, or access rights are insufficient. For a PAT, check your user access and selected workspace.
-- **Validation error:** Verify the root is a real page and the new page can be created underneath it.
-- **Existing month not detected:** Check that the month pages are actual nested subpages, not hyperlink blocks or links to pages in another location.
-- **GitHub schedule didn't run:** Check Actions is enabled and workflow is in the default branch. Scheduled execution is best effort, not a hard real-time guarantee.
+- `401` or authentication failed: verify `NOTION_TOKEN` and copy the token from the integration settings.
+- `403` or `404`: verify `NOTION_ROOT_PAGE_ID`, then add the integration to the root page under `•••` → `Connections`.
+- Validation errors: confirm the root is a real Notion page and its integration access is enabled.
+- Existing month is not found: it must be an actual child page beneath the root page, not a link block.
+- Missing scheduled execution: inspect logs and verify the cron expression and container status.
+- Duplicate risk: lookups are exact and sequential runs are idempotent, but Notion has no atomic create-if-not-exists operation. A duplicate title may occur only with simultaneous external or multi-container writes. Run one container for this automation. If scaled, coordinate instances externally; this application does not silently modify either copy.
 
-Documentation: [Notion API quickstart](https://developers.notion.com/guides/notion-api/quick-start), [Notion block children](https://developers.notion.com/reference/get-block-children), [GitHub Actions schedule](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax).
+## Safety
+
+The automation checks direct child pages with pagination, creates the month page if needed, and only creates a missing weekday under that month. Existing matching pages are preserved. Monthly and daily duplicate titles are reported so conflicts can be resolved manually in Notion.

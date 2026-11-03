@@ -69,7 +69,7 @@ function parseArgs(args) {
   return { date, dryRun, backfillMonth };
 }
 
-async function api(token, method, path, body) {
+export async function api(token, method, path, body) {
   const url = `${BASE_URL}${path}`;
   for (let attempt = 0; attempt < 4; attempt++) {
     let response;
@@ -92,9 +92,8 @@ async function api(token, method, path, body) {
       throw new Error(`${method} ${path} failed: ${error.message}`);
     }
     if (response.ok) return response.json();
-    // Only retry reads. Uncertain write results must be checked on the next run
-    // rather than blindly re-posted and potentially creating duplicates.
-    if (method === 'GET' && [429, 500, 502, 503, 504, 529].includes(response.status) && attempt < 3) {
+    // A 429 response establishes that Notion accepted no write; retrying it is safe.
+    if ((method === 'GET' || response.status === 429) && [429, 500, 502, 503, 504, 529].includes(response.status) && attempt < 3) {
       const retryAfter = Number(response.headers.get('retry-after'));
       const ms = Number.isFinite(retryAfter) && retryAfter > 0
         ? Math.min(retryAfter * 1000, 30000)
@@ -103,6 +102,10 @@ async function api(token, method, path, body) {
       continue;
     }
     const error = await response.text();
+    if (response.status === 401) throw new Error('Notion authentication failed. Check NOTION_TOKEN.');
+    if ([403, 404].includes(response.status)) {
+      throw new Error('Notion access denied or page not found. Check NOTION_ROOT_PAGE_ID and confirm the integration is connected to the root page.');
+    }
     throw new Error(`Notion ${method} ${path}: HTTP ${response.status}: ${error.slice(0, 1200)}`);
   }
   throw new Error(`Notion ${method} ${path} failed after retries.`);
@@ -138,15 +141,12 @@ function textBlock(content, bold = false) {
     },
   };
 }
-function emptyParagraph() {
-  return { object: 'block', type: 'paragraph', paragraph: { rich_text: [] } };
-}
 
 function dayTemplate() {
   return [
-    textBlock('Investigated:', true), emptyParagraph(),
-    textBlock('Task:', true), emptyParagraph(),
-    textBlock('Validated:', true), emptyParagraph(),
+    textBlock('Investigated:'),
+    textBlock('Task:'),
+    textBlock('Validated:'),
   ];
 }
 
@@ -175,6 +175,7 @@ export async function run({ token, rootPageId, date, dryRun = false, backfillMon
   const selected = dateDetails(date);
 
   console.log(`Checking Notion stand-up pages for ${date} (${TIMEZONE})${dryRun ? ' [DRY RUN]' : ''}`);
+  await api(token, 'GET', `/pages/${rootId}`);
   const monthPages = await listImmediateChildPages(token, rootId);
   const existingMonth = findUniqueChild(monthPages, selected.monthTitle);
   let monthId = existingMonth?.id;

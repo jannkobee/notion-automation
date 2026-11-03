@@ -1,0 +1,16 @@
+{
+  "name": "notion-standup-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scheduler.mjs",
+    "standup": "node standup.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "cron": "^4.3.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
